@@ -3,8 +3,6 @@ from datetime import datetime, timedelta
 import pytz
 from langchain_core.tools import tool
 from google_calendar import create_google_calendar_client
-
-# It's good practice to set a timezone
 TIMEZONE = "America/Los_Angeles" 
 TZ = pytz.timezone(TIMEZONE)
 
@@ -18,13 +16,9 @@ def check_availability(date: str) -> str:
     try:
         service = create_google_calendar_client()
         calendar_id = os.environ.get("CALENDAR_ID")
-        
-        # Parse date and set time range for the day
         day = datetime.strptime(date, "%Y-%m-%d").astimezone(TZ)
         start_of_day = day.replace(hour=9, minute=0, second=0, microsecond=0)
         end_of_day = day.replace(hour=17, minute=0, second=0, microsecond=0)
-
-        # Get busy slots from Google Calendar
         events_result = service.events().list(
             calendarId=calendar_id,
             timeMin=start_of_day.isoformat(),
@@ -33,15 +27,11 @@ def check_availability(date: str) -> str:
             orderBy='startTime'
         ).execute()
         busy_slots = events_result.get('items', [])
-
-        # Generate all possible 1-hour slots
         possible_slots = []
         current_time = start_of_day
         while current_time < end_of_day:
             possible_slots.append(current_time)
             current_time += timedelta(hours=1)
-        
-        # Filter out slots that overlap with busy events
         available_slots = []
         for slot_start in possible_slots:
             slot_end = slot_start + timedelta(hours=1)
@@ -49,8 +39,6 @@ def check_availability(date: str) -> str:
             for event in busy_slots:
                 event_start = datetime.fromisoformat(event['start'].get('dateTime')).astimezone(TZ)
                 event_end = datetime.fromisoformat(event['end'].get('dateTime')).astimezone(TZ)
-                
-                # Check for overlap
                 if max(slot_start, event_start) < min(slot_end, event_end):
                     is_available = False
                     break
@@ -64,7 +52,6 @@ def check_availability(date: str) -> str:
 
     except Exception as e:
         return f"An error occurred while checking availability: {e}. Please ensure the date is in YYYY-MM-DD format."
-
 
 @tool
 def create_appointment(start_time: str, summary: str) -> str:
