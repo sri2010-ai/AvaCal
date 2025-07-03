@@ -2,7 +2,6 @@
 
 import os
 from typing import TypedDict, Annotated, List
-from operator import add  # <-- CHANGE 1: We will use operator.add
 from datetime import datetime
 from langchain_core.messages import BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -15,12 +14,14 @@ from tools import check_availability, create_appointment, TZ
 from dotenv import load_dotenv
 load_dotenv()
 
-# --- CHANGE 2: THIS IS THE MOST IMPORTANT FIX ---
-# Define the state with a proper reducer for messages
-class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], add]
+# --- THE DEFINITIVE FIX: Use a simple lambda function for the reducer ---
+def a_plus_b(a, b):
+    return a + b
 
-# 2. Setup the tools
+class AgentState(TypedDict):
+    messages: Annotated[list, a_plus_b]
+
+# Setup the tools
 tools = [check_availability, create_appointment]
 tool_node = ToolNode(tools)
 
@@ -28,17 +29,18 @@ tool_node = ToolNode(tools)
 model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 model_with_tools = model.bind_tools(tools)
 
-# 3. Define the conditional edge logic
+# Define the conditional edge logic
 def should_continue(state: AgentState) -> str:
-    """Determines whether to continue with another tool call or end."""
     last_message = state["messages"][-1]
     if not last_message.tool_calls:
         return "end"
     return "continue"
 
-# 4. Build and compile the graph
-def build_agent_graph():
-    # The system prompt is crucial for guiding the agent's behavior
+# Define the Agent Node
+def agent_node(state: AgentState):
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    
+    # The system prompt
     system_prompt = """You are a helpful and friendly assistant for booking appointments.
     Your goal is to help the user book a 1-hour appointment in the connected Google Calendar.
 
@@ -52,35 +54,30 @@ def build_agent_graph():
     - If you encounter an error, inform the user clearly and politely.
     """
     
-    prompt_template = ChatPromptTemplate.from_messages([
+    prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         MessagesPlaceholder(variable_name="messages"),
     ])
     
-    runnable_agent = prompt_template | model_with_tools
+    chain = prompt | model_with_tools
     
-    def agent_node(state: AgentState):
-        today = datetime.now(TZ).strftime("%Y-%m-%d")
-        response = runnable_agent.invoke({
-            "messages": state["messages"], 
-            "today": today
-        })
-        # The agent returns a single message, so we wrap it in a list to be added to the state
-        return {"messages": [response]}
-        
-    # Build the graph
-    graph = StateGraph(AgentState)
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", tool_node)
-    graph.set_entry_point("agent")
-    graph.add_conditional_edges(
-        "agent",
-        should_continue,
-        {"continue": "tools", "end": END}
-    )
-    graph.add_edge("tools", "agent")
+    response = chain.invoke({
+        "messages": state["messages"], 
+        "today": today
+    })
+    
+    return {"messages": [response]}
 
-    return graph.compile()
+# Build and compile the graph
+graph_builder = StateGraph(AgentState)
+graph_builder.add_node("agent", agent_node)
+graph_builder.add_node("tools", tool_node)
+graph_builder.set_entry_point("agent")
+graph_builder.add_conditional_edges(
+    "agent",
+    should_continue,
+    {"continue": "tools", "end": END}
+)
+graph_builder.add_edge("tools", "agent")
 
-# Pre-compile the graph for efficiency
-agent_graph = build_agent_graph()
+agent_graph = graph_builder.compile()
