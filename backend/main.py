@@ -1,12 +1,12 @@
+# backend/main.py
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from datetime import datetime
-import uuid
+from langchain_core.messages import HumanMessage
 
 from agent import agent_graph
-from tools import TZ
 
 app = FastAPI(
     title="Conversational Calendar Booking Agent API",
@@ -14,10 +14,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS Middleware to allow requests from our Streamlit frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict this to your frontend's URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -26,13 +25,15 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    history: List[Dict[str, Any]] # Frontend should send the history
 
 class ChatResponse(BaseModel):
     response: str
     session_id: str
+    history: List[Dict[str, Any]] # Send back the updated history
 
-# In-memory store for conversation histories. For production, use Redis or a DB.
-conversation_histories: Dict[str, List[Dict[str, Any]]] = {}
+# LangGraph now manages state internally per run, so we don't need a server-side history store.
+# However, the frontend needs to maintain and send the history for the LLM's context.
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
@@ -42,31 +43,33 @@ async def chat_with_agent(request: ChatRequest):
     session_id = request.session_id
     user_message = request.message
 
-    # Retrieve or create conversation history
-    if session_id not in conversation_histories:
-        conversation_histories[session_id] = []
+    # Reconstruct message history for LangGraph
+    # For this simple bot, we can just pass the latest message.
+    # A more robust solution would pass the whole history.
+    messages = [HumanMessage(content=user_message)]
+
+    # --- CHANGE 3: The way we invoke and get the final response ---
+    # The input dictionary must match the AgentState structure.
+    inputs = {"messages": messages}
     
-    history = conversation_histories[session_id]
+    # Use .invoke() for a single final response, which is simpler here.
+    final_state = agent_graph.invoke(inputs, {"recursion_limit": 100})
 
-    # Format the input for the LangGraph agent
-    inputs = {"messages": [("human", user_message)]}
-
-    # Invoke the agent
-    response_generator = agent_graph.stream(inputs, {"recursion_limit": 100}, stream_mode="values")
-    
-    # The final response is the last one from the stream
-    final_response = None
-    for value in response_generator:
-        final_response = value
-
-    # The agent's response is in the 'messages' key, and it's the last message
-    agent_response_message = final_response['messages'][-1]
+    # The agent's final response is the last message in the state
+    agent_response_message = final_state['messages'][-1]
     agent_response_text = agent_response_message.content
 
-    # Update history (optional, as LangGraph state is self-contained for each call)
-    # history.append({"human": user_message, "ai": agent_response_text})
+    # The new history includes the user's message and the bot's response
+    new_history = request.history + [
+        {"role": "user", "content": user_message},
+        {"role": "assistant", "content": agent_response_text}
+    ]
 
-    return ChatResponse(response=agent_response_text, session_id=session_id)
+    return ChatResponse(
+        response=agent_response_text,
+        session_id=session_id,
+        history=new_history
+    )
 
 @app.get("/")
 def read_root():
