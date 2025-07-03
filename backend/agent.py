@@ -1,12 +1,16 @@
+# backend/agent.py
+
 import os
 from typing import TypedDict, Annotated, List
 from operator import itemgetter
+from datetime import datetime # Import datetime here
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolExecutor
-from tools import check_availability, create_appointment
+# THIS IS THE KEY CHANGE
+from langgraph.prebuilt import ToolNode
+from tools import check_availability, create_appointment, TZ # Import TZ from tools
 
 # Load API Key from .env for local dev
 from dotenv import load_dotenv
@@ -16,58 +20,32 @@ load_dotenv()
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], itemgetter("messages")]
 
-# 2. Setup the tools and the LLM
+# 2. Setup the tools
 tools = [check_availability, create_appointment]
-tool_executor = ToolExecutor(tools)
+
+# THIS IS THE NEW, SIMPLER WAY TO CREATE THE TOOL NODE
+tool_node = ToolNode(tools)
 
 # Use Gemini 1.5 Flash - it's fast and supports tool calling well
 model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 model_with_tools = model.bind_tools(tools)
 
 # 3. Define the nodes of the graph
-def agent_node(state):
-    """Invokes the model to generate a response or decide on a tool call."""
-    return {"messages": [model_with_tools.invoke(state["messages"])]}
-
-def tool_node(state):
-    """Executes the tool chosen by the model."""
-    last_message = state["messages"][-1]
-    tool_calls = last_message.tool_calls
-    
-    tool_outputs = tool_executor.batch(tool_calls)
-    
-    # LangChain provides a ToolMessage for this, but creating it manually for clarity
-    tool_messages = [
-        AIMessage(
-            content=str(output),
-            tool_call_id=call['id']
-        ) for call, output in zip(tool_calls, tool_outputs)
-    ]
-    return {"messages": tool_messages}
+# The agent_node is defined later with the full prompt chain
 
 # 4. Define the conditional edge logic
 def should_continue(state):
     """Determines whether to continue with another tool call or end."""
     last_message = state["messages"][-1]
-    if not last_message.tool_calls:
+    # If the LLM returned a message with no tool calls, we are done
+    if not hasattr(last_message, "tool_calls") or not last_message.tool_calls:
         return "end"
+    # Otherwise, we continue and call the tools
     return "continue"
 
 # 5. Build and compile the graph
 def build_agent_graph():
     graph = StateGraph(AgentState)
-
-    graph.add_node("agent", agent_node)
-    graph.add_node("tools", tool_node)
-
-    graph.set_entry_point("agent")
-
-    graph.add_conditional_edges(
-        "agent",
-        should_continue,
-        {"continue": "tools", "end": END}
-    )
-    graph.add_edge("tools", "agent")
 
     # The system prompt is crucial for guiding the agent's behavior
     system_prompt = """You are a helpful and friendly assistant for booking appointments.
@@ -83,7 +61,6 @@ def build_agent_graph():
     - If you encounter an error, inform the user clearly and politely.
     """
     
-    # We will format the prompt with today's date in the main app
     prompt_template = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         MessagesPlaceholder(variable_name="messages"),
@@ -91,12 +68,30 @@ def build_agent_graph():
     
     runnable_agent = prompt_template | model_with_tools
     
-    # Re-define agent_node to use the full chain with the prompt
-    def agent_node_with_prompt(state):
+    def agent_node(state):
         today = datetime.now(TZ).strftime("%Y-%m-%d")
-        return {"messages": [runnable_agent.invoke({"messages": state["messages"], "today": today})]}
-        
-    graph.nodes['agent']['callable'] = agent_node_with_prompt
+        response = runnable_agent.invoke({"messages": state["messages"], "today": today})
+        # The agent returns a single message, but the state expects a list of messages.
+        # We append the new message to the existing ones.
+        return {"messages": [response]}
+    
+    # Define the nodes
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tool_node) # Use the new ToolNode directly
+
+    # Define the edges
+    graph.set_entry_point("agent")
+
+    graph.add_conditional_edges(
+        "agent",
+        should_continue,
+        {
+            "continue": "tools",
+            "end": END
+        }
+    )
+    
+    graph.add_edge("tools", "agent")
 
     return graph.compile()
 
