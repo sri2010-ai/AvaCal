@@ -1,5 +1,3 @@
-# backend/agent.py
-
 import os
 from typing import TypedDict, Annotated, List
 from datetime import datetime
@@ -9,38 +7,27 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from tools import check_availability, create_appointment, TZ
-
-# Load API Key from .env for local dev
 from dotenv import load_dotenv
 load_dotenv()
-
-# --- THE DEFINITIVE FIX: Use a simple lambda function for the reducer ---
 def a_plus_b(a, b):
     return a + b
 
 class AgentState(TypedDict):
     messages: Annotated[list, a_plus_b]
 
-# Setup the tools
 tools = [check_availability, create_appointment]
 tool_node = ToolNode(tools)
-
-# Use Gemini 1.5 Flash
 model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 model_with_tools = model.bind_tools(tools)
 
-# Define the conditional edge logic
 def should_continue(state: AgentState) -> str:
     last_message = state["messages"][-1]
     if not last_message.tool_calls:
         return "end"
     return "continue"
 
-# Define the Agent Node
 def agent_node(state: AgentState):
     today = datetime.now(TZ).strftime("%Y-%m-%d")
-    
-    # The system prompt
     system_prompt = """You are a helpful and friendly assistant for booking appointments.
     Your goal is to help the user book a 1-hour appointment in the connected Google Calendar.
 
@@ -53,22 +40,17 @@ def agent_node(state: AgentState):
     - Once the appointment is successfully booked, confirm this with the user.
     - If you encounter an error, inform the user clearly and politely.
     """
-    
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         MessagesPlaceholder(variable_name="messages"),
-    ])
-    
+    ]) 
     chain = prompt | model_with_tools
-    
     response = chain.invoke({
         "messages": state["messages"], 
         "today": today
     })
     
     return {"messages": [response]}
-
-# Build and compile the graph
 graph_builder = StateGraph(AgentState)
 graph_builder.add_node("agent", agent_node)
 graph_builder.add_node("tools", tool_node)
