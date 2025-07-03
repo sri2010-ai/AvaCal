@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-
 from agent import agent_graph
 
 app = FastAPI(
@@ -31,30 +30,21 @@ class ChatResponse(BaseModel):
     response: str
     session_id: str
     history: List[Dict[str, Any]]
-
-# In-memory store for conversation histories.
 conversation_histories: Dict[str, List[Dict[str, Any]]] = {}
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
     session_id = request.session_id
     user_message = request.message
-
-    # Create a new history for each call for simplicity, as LangGraph is stateless per-call
-    messages = [HumanMessage(content=user_message)]
-    
-    inputs = {"messages": messages}
-    
+    messages = [HumanMessage(content=user_message)]   
+    inputs = {"messages": messages}    
     final_state = agent_graph.invoke(inputs, {"recursion_limit": 100})
-
     agent_response_message = final_state['messages'][-1]
     agent_response_text = agent_response_message.content
-
     new_history = request.history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": agent_response_text}
     ]
-
     return ChatResponse(
         response=agent_response_text,
         session_id=session_id,
