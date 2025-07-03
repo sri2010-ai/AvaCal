@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 from agent import agent_graph
 
@@ -25,41 +25,31 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str
     message: str
-    history: List[Dict[str, Any]] # Frontend should send the history
+    history: List[Dict[str, Any]]
 
 class ChatResponse(BaseModel):
     response: str
     session_id: str
-    history: List[Dict[str, Any]] # Send back the updated history
+    history: List[Dict[str, Any]]
 
-# LangGraph now manages state internally per run, so we don't need a server-side history store.
-# However, the frontend needs to maintain and send the history for the LLM's context.
+# In-memory store for conversation histories.
+conversation_histories: Dict[str, List[Dict[str, Any]]] = {}
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat_with_agent(request: ChatRequest):
-    """
-    Endpoint to chat with the calendar booking agent.
-    """
     session_id = request.session_id
     user_message = request.message
 
-    # Reconstruct message history for LangGraph
-    # For this simple bot, we can just pass the latest message.
-    # A more robust solution would pass the whole history.
+    # Create a new history for each call for simplicity, as LangGraph is stateless per-call
     messages = [HumanMessage(content=user_message)]
-
-    # --- CHANGE 3: The way we invoke and get the final response ---
-    # The input dictionary must match the AgentState structure.
+    
     inputs = {"messages": messages}
     
-    # Use .invoke() for a single final response, which is simpler here.
     final_state = agent_graph.invoke(inputs, {"recursion_limit": 100})
 
-    # The agent's final response is the last message in the state
     agent_response_message = final_state['messages'][-1]
     agent_response_text = agent_response_message.content
 
-    # The new history includes the user's message and the bot's response
     new_history = request.history + [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": agent_response_text}
