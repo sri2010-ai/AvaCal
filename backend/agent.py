@@ -1,36 +1,39 @@
 import os
-from typing import TypedDict, Annotated, List
-from operator import itemgetter
+from typing import TypedDict, Annotated, Sequence
 from datetime import datetime
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode # <-- CORRECTED IMPORT
+from langgraph.prebuilt import ToolNode
 from tools import check_availability, create_appointment, TZ
 
 # Load API Key from .env for local dev
 from dotenv import load_dotenv
 load_dotenv()
 
-# 1. Define the state for our graph
+# --- State Management ---
+# The reducer function tells LangGraph how to add new messages to the existing list.
+def add_messages(left: list, right: list) -> list:
+    """Adds messages to the state. Ensures the new messages are always at the end."""
+    return left + right
+
+# 1. Define the state for our graph.
+# The `Annotated` type hint with `add_messages` is the key to managing the conversation history.
 class AgentState(TypedDict):
-    messages: Annotated[List[BaseMessage], itemgetter("messages")]
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+
 
 # 2. Setup the tools and the LLM
 tools = [check_availability, create_appointment]
-
-# The new ToolNode handles the execution of tools for you.
-# It replaces the need for ToolExecutor and a manual tool_node function.
 tool_node = ToolNode(tools)
 
-# Use Gemini 1.5 Flash - it's fast and supports tool calling well
-model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0, convert_system_message_to_human=True)
 model_with_tools = model.bind_tools(tools)
 
+
 # 3. Define the nodes of the graph
-# The agent_node is now defined within the build_agent_graph function to include the prompt
-# This is cleaner.
+# The agent_node is now defined within the build_agent_graph function to include the prompt.
 
 # 4. Define the conditional edge logic
 def should_continue(state: AgentState) -> str:
@@ -77,8 +80,9 @@ def build_agent_graph():
         
     graph = StateGraph(AgentState)
 
+    # We are defining the agent_node_with_prompt as the 'agent' node
     graph.add_node("agent", agent_node_with_prompt)
-    graph.add_node("tools", tool_node) # Using the ToolNode object directly
+    graph.add_node("tools", tool_node)
 
     graph.set_entry_point("agent")
 
