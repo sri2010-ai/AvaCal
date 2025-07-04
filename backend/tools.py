@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta
 import pytz
+import traceback
 from langchain_core.tools import tool
 from google_calendar import create_google_calendar_client
 TIMEZONE = "America/Los_Angeles" 
@@ -78,4 +79,7 @@ def create_appointment(start_time: str, summary: str) -> str:
         return f"Success! Appointment '{summary}' has been booked for {start.strftime('%A, %B %d at %-I:%M %p')}. Event ID: {created_event.get('id')}"
 
     except Exception as e:
-        return f"An error occurred while creating the appointment: {e}. Please ensure the start_time is in the correct ISO 8601 format."
+        print("--- DETAILED ERROR IN create_appointment ---")
+        traceback.print_exc() # This will print the full error to the logs
+        print("--------------------------------------------")
+        return f"An error occurred while creating the appointment: {e}. Please double-check the details and try again."
