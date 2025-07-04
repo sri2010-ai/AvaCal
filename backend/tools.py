@@ -52,8 +52,12 @@ def check_availability(date: str) -> str:
         return f"The following 1-hour slots are available on {date}: {', '.join(available_slots)}"
 
     except Exception as e:
+        print("--- DETAILED ERROR IN check_availability ---")
+        traceback.print_exc() # This prints the full, technical error to your logs
+        print(f"The specific error message is: {e}")
+        print("--------------------------------------------")
+        # The user-facing message can stay the same
         return f"An error occurred while checking availability: {e}. Please ensure the date is in YYYY-MM-DD format."
-
 @tool
 def create_appointment(start_time: str, summary: str) -> str:
     """
