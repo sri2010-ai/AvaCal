@@ -1,33 +1,50 @@
 import os
 from typing import TypedDict, Annotated, List
+from operator import itemgetter
 from datetime import datetime
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import ToolNode # <-- CORRECTED IMPORT
 from tools import check_availability, create_appointment, TZ
+
+# Load API Key from .env for local dev
 from dotenv import load_dotenv
 load_dotenv()
-def a_plus_b(a, b):
-    return a + b
 
+# 1. Define the state for our graph
 class AgentState(TypedDict):
-    messages: Annotated[list, a_plus_b]
+    messages: Annotated[List[BaseMessage], itemgetter("messages")]
 
+# 2. Setup the tools and the LLM
 tools = [check_availability, create_appointment]
+
+# The new ToolNode handles the execution of tools for you.
+# It replaces the need for ToolExecutor and a manual tool_node function.
 tool_node = ToolNode(tools)
+
+# Use Gemini 1.5 Flash - it's fast and supports tool calling well
 model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 model_with_tools = model.bind_tools(tools)
 
+# 3. Define the nodes of the graph
+# The agent_node is now defined within the build_agent_graph function to include the prompt
+# This is cleaner.
+
+# 4. Define the conditional edge logic
 def should_continue(state: AgentState) -> str:
+    """Determines whether to continue with another tool call or end."""
     last_message = state["messages"][-1]
+    # If the model did not make a tool call, then we end the process.
     if not last_message.tool_calls:
         return "end"
+    # Otherwise, we continue and call the tools.
     return "continue"
 
-def agent_node(state: AgentState):
-    today = datetime.now(TZ).strftime("%Y-%m-%d")
+# 5. Build and compile the graph
+def build_agent_graph():
+    # The system prompt is crucial for guiding the agent's behavior
     system_prompt = """You are a helpful and friendly assistant for booking appointments.
     Your goal is to help the user book a 1-hour appointment in the connected Google Calendar.
 
@@ -40,26 +57,42 @@ def agent_node(state: AgentState):
     - Once the appointment is successfully booked, confirm this with the user.
     - If you encounter an error, inform the user clearly and politely.
     """
-    prompt = ChatPromptTemplate.from_messages([
+    
+    prompt_template = ChatPromptTemplate.from_messages([
         ("system", system_prompt),
         MessagesPlaceholder(variable_name="messages"),
-    ]) 
-    chain = prompt | model_with_tools
-    response = chain.invoke({
-        "messages": state["messages"], 
-        "today": today
-    })
+    ])
     
-    return {"messages": [response]}
-graph_builder = StateGraph(AgentState)
-graph_builder.add_node("agent", agent_node)
-graph_builder.add_node("tools", tool_node)
-graph_builder.set_entry_point("agent")
-graph_builder.add_conditional_edges(
-    "agent",
-    should_continue,
-    {"continue": "tools", "end": END}
-)
-graph_builder.add_edge("tools", "agent")
+    # This is our main agent node. It invokes the model with the current state.
+    def agent_node_with_prompt(state: AgentState):
+        today = datetime.now(TZ).strftime("%Y-%m-%d")
+        # Chain the prompt with the model
+        runnable_agent = prompt_template | model_with_tools
+        # Invoke the chain
+        response = runnable_agent.invoke({
+            "messages": state["messages"],
+            "today": today
+        })
+        return {"messages": [response]}
+        
+    graph = StateGraph(AgentState)
 
-agent_graph = graph_builder.compile()
+    graph.add_node("agent", agent_node_with_prompt)
+    graph.add_node("tools", tool_node) # Using the ToolNode object directly
+
+    graph.set_entry_point("agent")
+
+    graph.add_conditional_edges(
+        "agent",
+        should_continue,
+        {
+            "continue": "tools",
+            "end": END,
+        },
+    )
+    graph.add_edge("tools", "agent")
+
+    return graph.compile()
+
+# Pre-compile the graph for efficiency
+agent_graph = build_agent_graph()
